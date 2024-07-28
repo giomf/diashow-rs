@@ -1,9 +1,10 @@
 use std::{
+    collections::VecDeque,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{channel, Receiver, Sender},
-        Arc,
+        Arc, Mutex,
     },
     thread,
     time::Duration,
@@ -13,6 +14,7 @@ use clap::Parser;
 use eframe::egui::{self, load::SizedTexture, ColorImage, TextBuffer};
 use glob::glob;
 use image::{self, ImageBuffer, Rgba, RgbaImage};
+use notify::{event::CreateKind, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rayon::prelude::*;
 
 const ALPHA_CHANNEL: usize = 3;
@@ -74,24 +76,29 @@ fn main() {
 }
 
 struct Diashow {
+    _watcher: RecommendedWatcher,
     change_flag: Arc<AtomicBool>,
     change_sender: Sender<bool>,
     current_alpha: u8,
     current_image: RgbaImage,
-    previous_image: RgbaImage,
     current_index: usize,
     fade_flag: Arc<AtomicBool>,
-    fade_sender: Sender<bool>,
     fade_iteration_step: u8,
+    fade_sender: Sender<bool>,
+    image_queue: Arc<Mutex<VecDeque<PathBuf>>>,
     images: Vec<PathBuf>,
     next_image: RgbaImage,
+    previous_image: RgbaImage,
     texture: egui::TextureHandle,
 }
 
 impl Diashow {
     pub fn new(context: egui::Context, start_parameter: Start) -> Self {
         // Load images and create texture
-        let images = Self::get_images_paths_from(start_parameter.images);
+        let mut images = Self::get_images_paths_from(start_parameter.images.clone());
+        let image_queue: Arc<Mutex<VecDeque<PathBuf>>> = Default::default();
+        images.sort();
+
         let texture =
             context.load_texture("Current image", ColorImage::default(), Default::default());
 
@@ -126,21 +133,49 @@ impl Diashow {
         let current_image_path = &images.clone()[start_index];
         let start_image = Self::load_rgba8_image(&current_image_path);
 
+        let mut watcher = notify::recommended_watcher({
+            let image_queue = image_queue.clone();
+            move |res: notify::Result<Event>| match res {
+                Ok(event) => {
+                    let path = event.paths[0].clone();
+                    if event.kind == EventKind::Create(CreateKind::File) {
+                        println!(
+                            "New image created: {}",
+                            path.file_name().unwrap().to_string_lossy().as_str()
+                        );
+                        image_queue.lock().unwrap().push_back(path);
+                    }
+                }
+                Err(e) => println!("watch error: {:?}", e),
+            }
+        })
+        .unwrap();
+
+        // Add a path to be watched. All files and directories at that path and
+        // below will be monitored for changes.
+        watcher
+            .watch(Path::new(&start_parameter.images), RecursiveMode::Recursive)
+            .unwrap();
+
+        println!("\n--- Starting diashow ---\n");
+
         Self {
+            change_flag,
+            change_sender,
+            current_alpha: u8::MAX,
+            current_image: start_image.clone(),
             current_index: start_index,
+            fade_flag,
             fade_iteration_step: start_parameter
                 .fade_iteration_step
                 .unwrap_or(FADE_ITERATION_STEPS),
-            images,
-            texture,
-            change_flag,
-            fade_flag,
-            current_image: start_image.clone(),
-            previous_image: start_image,
-            next_image: Default::default(),
-            current_alpha: u8::MAX,
-            change_sender,
             fade_sender,
+            images,
+            next_image: Default::default(),
+            previous_image: start_image,
+            texture,
+            _watcher: watcher,
+            image_queue,
         }
     }
 
@@ -216,11 +251,22 @@ impl eframe::App for Diashow {
                 self.change_flag.store(false, Ordering::Relaxed);
                 self.iterate_index();
 
-                let image_path = self
-                    .images
-                    .get(self.current_index)
-                    .expect("Failed to get image frome queue");
-                println!("Next image {}", image_path.to_string_lossy().as_str());
+                let mut image_queue_locked = self.image_queue.lock().unwrap();
+                let image_path = if image_queue_locked.is_empty() {
+                    self.images
+                        .get(self.current_index)
+                        .expect("Failed to get image frome queue")
+                        .clone()
+                } else {
+                    let image_path = image_queue_locked.pop_front().unwrap();
+                    self.images.push(image_path.clone());
+                    image_path
+                };
+
+                println!(
+                    "Next image: {}",
+                    image_path.file_name().unwrap().to_string_lossy().as_str()
+                );
 
                 self.next_image = Self::load_rgba8_image(&image_path);
                 self.previous_image = self.current_image.clone();
