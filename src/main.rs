@@ -1,3 +1,5 @@
+mod cli;
+
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
@@ -11,6 +13,7 @@ use std::{
 };
 
 use clap::Parser;
+use cli::{Cli, Start};
 use eframe::egui::{self, load::SizedTexture, ColorImage, TextBuffer};
 use glob::glob;
 use image::{self, ImageBuffer, Rgba, RgbaImage};
@@ -20,37 +23,6 @@ use rayon::prelude::*;
 const ALPHA_CHANNEL: usize = 3;
 const FADE_ITERATION_DURATION: u64 = 50;
 const FADE_ITERATION_STEPS: u8 = 5;
-
-#[derive(Parser)]
-#[command(version, about = "Fotobox diashow", long_about = None)]
-#[clap(propagate_version = true)]
-enum Cli {
-    /// Start the diashow
-    Start(Start),
-}
-
-#[derive(Debug, Parser, Clone)]
-struct Start {
-    /// Folder where to search for images
-    #[arg(long)]
-    pub images: String,
-
-    /// Duration that one image is displayed in secounds
-    #[arg(long)]
-    pub duration: u64,
-
-    /// Index where to start. A negative number will start at the end.
-    #[arg(long, allow_negative_numbers(true))]
-    pub start_index: Option<i64>,
-
-    /// Duration of one fade iteration in miliseconds.
-    #[arg(long)]
-    pub fade_iteration_duration: Option<u64>,
-
-    /// Step size of one fade iteration.
-    #[arg(long)]
-    pub fade_iteration_step: Option<u8>,
-}
 
 fn main() {
     let cli = Cli::parse();
